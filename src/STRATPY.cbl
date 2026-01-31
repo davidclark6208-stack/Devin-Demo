@@ -10,28 +10,32 @@
       * ARCHITECTURE:                                                 *
       *   - COBOL handles file I/O and data processing               *
       *   - Python (strategy_rules.py) contains all business rules   *
-      *   - COBOL calls Python via SYSTEM call for each record       *
-      *   - Python returns rule results via output file              *
+      *   - COBOL calls Python via BPXWUNIX (z/OS USS) for each rec  *
+      *   - Python returns rule results via STDOUT buffer            *
+      *                                                               *
+      * Z/OS COMPLIANCE:                                              *
+      *   - Uses BPXWUNIX callable service for USS command execution *
+      *   - Supports IBM Open Enterprise SDK for Python on z/OS      *
+      *   - Uses HFS paths for Python script and I/O files           *
+      *   - Handles EBCDIC/ASCII conversion via environment vars     *
       *****************************************************************
 
        ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       SPECIAL-NAMES.
+           CLASS VALID-RETURN-CODE IS 0 THRU 4.
+
        INPUT-OUTPUT SECTION.
        FILE-CONTROL.
-           SELECT ACCOUNT-FILE ASSIGN TO 'ACCTINP'
-               ORGANIZATION IS LINE SEQUENTIAL
+           SELECT ACCOUNT-FILE ASSIGN TO ACCTINP
+               ORGANIZATION IS SEQUENTIAL
                FILE STATUS IS WS-ACCT-STATUS.
-           SELECT SCORE-FILE ASSIGN TO 'SCOREINP'
-               ORGANIZATION IS LINE SEQUENTIAL
+           SELECT SCORE-FILE ASSIGN TO SCOREINP
+               ORGANIZATION IS SEQUENTIAL
                FILE STATUS IS WS-SCORE-STATUS.
-           SELECT OUTPUT-FILE ASSIGN TO 'STRATOUT'
-               ORGANIZATION IS LINE SEQUENTIAL
+           SELECT OUTPUT-FILE ASSIGN TO STRATOUT
+               ORGANIZATION IS SEQUENTIAL
                FILE STATUS IS WS-OUT-STATUS.
-           SELECT PYTHON-INPUT ASSIGN TO 'PYINPUT'
-               ORGANIZATION IS LINE SEQUENTIAL
-               FILE STATUS IS WS-PYIN-STATUS.
-           SELECT PYTHON-OUTPUT ASSIGN TO 'PYOUTPUT'
-               ORGANIZATION IS LINE SEQUENTIAL
-               FILE STATUS IS WS-PYOUT-STATUS.
 
        DATA DIVISION.
        FILE SECTION.
@@ -39,7 +43,9 @@
       *****************************************************************
       * ACCOUNT INPUT FILE RECORD LAYOUT                              *
       *****************************************************************
-       FD  ACCOUNT-FILE.
+       FD  ACCOUNT-FILE
+           RECORDING MODE IS F
+           BLOCK CONTAINS 0 RECORDS.
        01  ACCOUNT-RECORD.
            05  ACCT-ACCOUNT-NUMBER    PIC X(20).
            05  ACCT-STATUS            PIC X(10).
@@ -50,7 +56,9 @@
       *****************************************************************
       * SCORE INPUT FILE RECORD LAYOUT (ORDERED BY ACCOUNT NUMBER)    *
       *****************************************************************
-       FD  SCORE-FILE.
+       FD  SCORE-FILE
+           RECORDING MODE IS F
+           BLOCK CONTAINS 0 RECORDS.
        01  SCORE-RECORD.
            05  SCORE-ACCOUNT-NUMBER   PIC X(20).
            05  SCORE-VALUE            PIC 9(3).
@@ -58,7 +66,9 @@
       *****************************************************************
       * OUTPUT FILE RECORD LAYOUT                                     *
       *****************************************************************
-       FD  OUTPUT-FILE.
+       FD  OUTPUT-FILE
+           RECORDING MODE IS F
+           BLOCK CONTAINS 0 RECORDS.
        01  OUTPUT-RECORD.
            05  OUT-ACCOUNT-NUMBER     PIC X(20).
            05  OUT-STATUS             PIC X(10).
@@ -73,18 +83,6 @@
            05  OUT-ACTIVITY           PIC X(10).
            05  OUT-DIAL-FREQUENCY     PIC 9(1).
 
-      *****************************************************************
-      * PYTHON INPUT FILE - DATA SENT TO PYTHON                       *
-      *****************************************************************
-       FD  PYTHON-INPUT.
-       01  PYTHON-INPUT-RECORD        PIC X(200).
-
-      *****************************************************************
-      * PYTHON OUTPUT FILE - RESULTS FROM PYTHON                      *
-      *****************************************************************
-       FD  PYTHON-OUTPUT.
-       01  PYTHON-OUTPUT-RECORD       PIC X(100).
-
        WORKING-STORAGE SECTION.
 
       *****************************************************************
@@ -94,8 +92,6 @@
            05  WS-ACCT-STATUS         PIC X(2).
            05  WS-SCORE-STATUS        PIC X(2).
            05  WS-OUT-STATUS          PIC X(2).
-           05  WS-PYIN-STATUS         PIC X(2).
-           05  WS-PYOUT-STATUS        PIC X(2).
 
       *****************************************************************
       * END OF FILE FLAGS                                             *
@@ -121,28 +117,39 @@
            05  WS-PYTHON-ERRORS       PIC 9(9) VALUE 0.
 
       *****************************************************************
-      * PYTHON INTEGRATION FIELDS                                     *
+      * BPXWUNIX CALLABLE SERVICE PARAMETERS                          *
+      * Reference: IBM z/OS UNIX System Services Programming          *
       *****************************************************************
-       01  WS-PYTHON-COMMAND          PIC X(500).
-       01  WS-PYTHON-SCRIPT           PIC X(100) 
-               VALUE 'python3 strategy_rules.py'.
-       01  WS-SYSTEM-RC               PIC S9(4) COMP.
+       01  WS-BPXWUNIX-PARMS.
+           05  WS-COMMAND-LENGTH      PIC S9(8) COMP.
+           05  WS-COMMAND-TEXT        PIC X(1024).
+           05  WS-STDIN-LENGTH        PIC S9(8) COMP VALUE 0.
+           05  WS-STDIN-DATA          PIC X(1).
+           05  WS-STDOUT-LENGTH       PIC S9(8) COMP VALUE 1024.
+           05  WS-STDOUT-DATA         PIC X(1024).
+           05  WS-STDERR-LENGTH       PIC S9(8) COMP VALUE 512.
+           05  WS-STDERR-DATA         PIC X(512).
+           05  WS-RETURN-VALUE        PIC S9(8) COMP.
+           05  WS-RETURN-CODE         PIC S9(8) COMP.
+           05  WS-REASON-CODE         PIC S9(8) COMP.
 
       *****************************************************************
-      * PYTHON RESULT FIELDS                                          *
+      * ENVIRONMENT VARIABLES FOR PYTHON                              *
       *****************************************************************
-       01  WS-PYTHON-RESULT.
-           05  WS-PY-WORKABLE         PIC X(1).
-           05  WS-PY-DELIM1           PIC X(1).
-           05  WS-PY-DIALABLE         PIC X(1).
-           05  WS-PY-DELIM2           PIC X(1).
-           05  WS-PY-RISK-SEGMENT     PIC X(6).
-           05  WS-PY-DELIM3           PIC X(1).
-           05  WS-PY-SMALL-BALANCE    PIC X(1).
-           05  WS-PY-DELIM4           PIC X(1).
-           05  WS-PY-ACTIVITY         PIC X(10).
-           05  WS-PY-DELIM5           PIC X(1).
-           05  WS-PY-DIAL-FREQ        PIC X(1).
+       01  WS-ENV-COUNT               PIC S9(8) COMP VALUE 3.
+       01  WS-ENV-LENGTH-ARRAY.
+           05  WS-ENV-LEN             PIC S9(8) COMP OCCURS 5.
+       01  WS-ENV-ARRAY.
+           05  WS-ENV-VAR             PIC X(200) OCCURS 5.
+
+      *****************************************************************
+      * PYTHON SCRIPT PATH AND COMMAND                                *
+      * Adjust paths based on your z/OS installation                  *
+      *****************************************************************
+       01  WS-PYTHON-PATH             PIC X(100)
+               VALUE '/usr/lpp/IBM/cyp/v3r11/pyz/bin/python3'.
+       01  WS-SCRIPT-PATH             PIC X(100)
+               VALUE '/u/strategy/strategy_rules.py'.
 
       *****************************************************************
       * WORKING FIELDS FOR DATA FORMATTING                            *
@@ -151,6 +158,7 @@
            05  WS-MATCHED-SCORE       PIC 9(3) VALUE 0.
            05  WS-BALANCE-DISPLAY     PIC Z(12)9.99.
            05  WS-SCORE-DISPLAY       PIC ZZ9.
+           05  WS-CMD-PTR             PIC S9(8) COMP.
 
       *****************************************************************
       * PARSED PYTHON OUTPUT FIELDS                                   *
@@ -185,12 +193,15 @@
            STOP RUN.
 
       *****************************************************************
-      * INITIALIZATION - OPEN FILES AND READ FIRST RECORDS            *
+      * INITIALIZATION - OPEN FILES, SETUP ENV, READ FIRST RECORDS    *
       *****************************************************************
        1000-INITIALIZE.
            DISPLAY '**********************************************'
-           DISPLAY 'STRATEGY ENGINE WITH PYTHON RULES - STARTING'
+           DISPLAY 'STRATEGY ENGINE WITH PYTHON RULES - Z/OS'
+           DISPLAY 'USING BPXWUNIX FOR USS PYTHON EXECUTION'
            DISPLAY '**********************************************'
+
+           PERFORM 1050-SETUP-ENVIRONMENT
 
            OPEN INPUT  ACCOUNT-FILE
            OPEN INPUT  SCORE-FILE
@@ -213,6 +224,33 @@
 
            PERFORM 1100-READ-ACCOUNT-FILE
            PERFORM 1200-READ-SCORE-FILE.
+
+      *****************************************************************
+      * SETUP ENVIRONMENT VARIABLES FOR PYTHON EXECUTION              *
+      *****************************************************************
+       1050-SETUP-ENVIRONMENT.
+      *    Set PATH to include Python installation
+           MOVE 'PATH=/usr/lpp/IBM/cyp/v3r11/pyz/bin:$PATH'
+               TO WS-ENV-VAR(1)
+           MOVE FUNCTION LENGTH(
+               FUNCTION TRIM(WS-ENV-VAR(1)))
+               TO WS-ENV-LEN(1)
+
+      *    Set PYTHONPATH for module location
+           MOVE 'PYTHONPATH=/u/strategy'
+               TO WS-ENV-VAR(2)
+           MOVE FUNCTION LENGTH(
+               FUNCTION TRIM(WS-ENV-VAR(2)))
+               TO WS-ENV-LEN(2)
+
+      *    Set encoding for proper EBCDIC/ASCII handling
+           MOVE '_BPXK_AUTOCVT=ON'
+               TO WS-ENV-VAR(3)
+           MOVE FUNCTION LENGTH(
+               FUNCTION TRIM(WS-ENV-VAR(3)))
+               TO WS-ENV-LEN(3)
+
+           MOVE 3 TO WS-ENV-COUNT.
 
       *****************************************************************
       * READ ACCOUNT FILE                                             *
@@ -271,7 +309,8 @@
            END-IF.
 
       *****************************************************************
-      * CALL PYTHON SCRIPT TO EVALUATE BUSINESS RULES                 *
+      * CALL PYTHON SCRIPT VIA BPXWUNIX TO EVALUATE BUSINESS RULES    *
+      * Uses IBM z/OS UNIX System Services callable service           *
       * Python script: strategy_rules.py                              *
       * Arguments: account_number status balance phone consent score  *
       * Output: workable|dialable|risk|small_bal|activity|dial_freq   *
@@ -279,38 +318,87 @@
        3000-CALL-PYTHON-RULES.
            ADD 1 TO WS-PYTHON-CALLS
 
+           PERFORM 3010-BUILD-PYTHON-COMMAND
+           PERFORM 3020-EXECUTE-BPXWUNIX
+
+           IF WS-RETURN-VALUE NOT = 0
+               DISPLAY 'PYTHON ERROR FOR ACCOUNT: '
+                       ACCT-ACCOUNT-NUMBER
+               DISPLAY 'RETURN VALUE: ' WS-RETURN-VALUE
+               DISPLAY 'RETURN CODE:  ' WS-RETURN-CODE
+               DISPLAY 'REASON CODE:  ' WS-REASON-CODE
+               ADD 1 TO WS-PYTHON-ERRORS
+               PERFORM 3100-SET-DEFAULT-VALUES
+           ELSE
+               PERFORM 3200-PARSE-STDOUT-OUTPUT
+           END-IF.
+
+      *****************************************************************
+      * BUILD PYTHON COMMAND STRING FOR BPXWUNIX                      *
+      *****************************************************************
+       3010-BUILD-PYTHON-COMMAND.
            MOVE ACCT-BALANCE TO WS-BALANCE-DISPLAY
            MOVE WS-MATCHED-SCORE TO WS-SCORE-DISPLAY
 
-           STRING WS-PYTHON-SCRIPT DELIMITED BY '  '
+           INITIALIZE WS-COMMAND-TEXT
+           MOVE 1 TO WS-CMD-PTR
+
+           STRING WS-PYTHON-PATH DELIMITED BY SPACES
+                  ' ' DELIMITED BY SIZE
+                  WS-SCRIPT-PATH DELIMITED BY SPACES
                   ' "' DELIMITED BY SIZE
                   ACCT-ACCOUNT-NUMBER DELIMITED BY '  '
                   '" "' DELIMITED BY SIZE
                   ACCT-STATUS DELIMITED BY '  '
                   '" ' DELIMITED BY SIZE
-                  WS-BALANCE-DISPLAY DELIMITED BY '  '
+                  WS-BALANCE-DISPLAY DELIMITED BY SPACES
                   ' "' DELIMITED BY SIZE
                   ACCT-PHONE-NUMBER DELIMITED BY '  '
                   '" "' DELIMITED BY SIZE
                   ACCT-PHONE-CONSENT DELIMITED BY '  '
                   '" ' DELIMITED BY SIZE
-                  WS-SCORE-DISPLAY DELIMITED BY '  '
-                  ' > PYOUTPUT' DELIMITED BY SIZE
-               INTO WS-PYTHON-COMMAND
+                  WS-SCORE-DISPLAY DELIMITED BY SPACES
+               INTO WS-COMMAND-TEXT
+               WITH POINTER WS-CMD-PTR
            END-STRING
 
-           CALL 'SYSTEM' USING WS-PYTHON-COMMAND
-               RETURNING WS-SYSTEM-RC
+           SUBTRACT 1 FROM WS-CMD-PTR
+           MOVE WS-CMD-PTR TO WS-COMMAND-LENGTH.
+
+      *****************************************************************
+      * EXECUTE PYTHON VIA BPXWUNIX CALLABLE SERVICE                  *
+      * This is the z/OS compliant method to call USS commands        *
+      *****************************************************************
+       3020-EXECUTE-BPXWUNIX.
+           INITIALIZE WS-STDOUT-DATA
+           INITIALIZE WS-STDERR-DATA
+           MOVE 1024 TO WS-STDOUT-LENGTH
+           MOVE 512  TO WS-STDERR-LENGTH
+           MOVE 0    TO WS-STDIN-LENGTH
+           MOVE 0    TO WS-RETURN-VALUE
+           MOVE 0    TO WS-RETURN-CODE
+           MOVE 0    TO WS-REASON-CODE
+
+           CALL 'BPXWUNIX' USING
+               WS-COMMAND-LENGTH
+               WS-COMMAND-TEXT
+               WS-STDIN-LENGTH
+               WS-STDIN-DATA
+               WS-STDOUT-LENGTH
+               WS-STDOUT-DATA
+               WS-STDERR-LENGTH
+               WS-STDERR-DATA
+               WS-ENV-COUNT
+               WS-ENV-LENGTH-ARRAY
+               WS-ENV-ARRAY
+               WS-RETURN-VALUE
+               WS-RETURN-CODE
+               WS-REASON-CODE
            END-CALL
 
-           IF WS-SYSTEM-RC NOT = 0
-               DISPLAY 'PYTHON ERROR FOR ACCOUNT: ' 
-                       ACCT-ACCOUNT-NUMBER
-               DISPLAY 'RETURN CODE: ' WS-SYSTEM-RC
-               ADD 1 TO WS-PYTHON-ERRORS
-               PERFORM 3100-SET-DEFAULT-VALUES
-           ELSE
-               PERFORM 3200-READ-PYTHON-OUTPUT
+           IF WS-STDERR-LENGTH > 0
+               DISPLAY 'PYTHON STDERR: '
+                       WS-STDERR-DATA(1:WS-STDERR-LENGTH)
            END-IF.
 
       *****************************************************************
@@ -325,22 +413,16 @@
            MOVE 0          TO WS-DIAL-FREQUENCY.
 
       *****************************************************************
-      * READ AND PARSE PYTHON OUTPUT                                  *
+      * PARSE PYTHON OUTPUT FROM STDOUT BUFFER                        *
       * Format: workable|dialable|risk_segment|small_bal|activity|freq*
       *****************************************************************
-       3200-READ-PYTHON-OUTPUT.
-           OPEN INPUT PYTHON-OUTPUT
-           IF WS-PYOUT-STATUS NOT = '00'
-               DISPLAY 'ERROR OPENING PYTHON OUTPUT: ' WS-PYOUT-STATUS
-               PERFORM 3100-SET-DEFAULT-VALUES
+       3200-PARSE-STDOUT-OUTPUT.
+           IF WS-STDOUT-LENGTH > 0
+               MOVE WS-STDOUT-DATA(1:WS-STDOUT-LENGTH)
+                   TO WS-OUTPUT-LINE
+               PERFORM 3300-PARSE-PYTHON-OUTPUT
            ELSE
-               READ PYTHON-OUTPUT INTO WS-OUTPUT-LINE
-                   AT END
-                       PERFORM 3100-SET-DEFAULT-VALUES
-                   NOT AT END
-                       PERFORM 3300-PARSE-PYTHON-OUTPUT
-               END-READ
-               CLOSE PYTHON-OUTPUT
+               PERFORM 3100-SET-DEFAULT-VALUES
            END-IF.
 
       *****************************************************************
@@ -361,7 +443,7 @@
            END-UNSTRING
 
            IF WS-TEMP-FIELD NOT = SPACES
-               MOVE FUNCTION NUMVAL(WS-TEMP-FIELD) 
+               MOVE FUNCTION NUMVAL(WS-TEMP-FIELD)
                    TO WS-DIAL-FREQUENCY
            ELSE
                MOVE 0 TO WS-DIAL-FREQUENCY
